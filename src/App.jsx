@@ -33,9 +33,11 @@ import {
 // -------------------------
 // API
 // -------------------------
-const API_BASE = "https://ohana-backend.onrender.com";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "https://ohana-backend.onrender.com";
 const TOKEN_KEY = "ohana_token";
 const USER_KEY = "ohana_user";
+const FALLBACK_DRINK_IMAGE =
+  "https://images.pexels.com/photos/302899/pexels-photo-302899.jpeg?auto=compress&cs=tinysrgb&w=1200";
 
 const getSavedToken = () => localStorage.getItem(TOKEN_KEY);
 
@@ -115,7 +117,7 @@ const products = [
     name: "Caramel Latte",
     desc: "Espresso + milk + caramel",
     image:
-      "https://images.unsplash.com/photo-1599398054066-a09d9b4aefdd?auto=format&fit=crop&w=400&q=80",
+      "https://images.pexels.com/photos/33152970/pexels-photo-33152970.jpeg?auto=compress&cs=tinysrgb&w=1200",
     prices: { "12oz": 90, "16oz": 100, "22oz": 110 },
     category: "Coffee",
     matchScore: 88,
@@ -397,6 +399,44 @@ const labelFromBucket = (bucket, range) => {
   return bucket;
 };
 
+const formatDateTime = (value) => {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value || "");
+  return d.toLocaleString();
+};
+
+const mapStaffGroup = (g) => {
+  const items = Array.isArray(g?.items) ? g.items : [];
+  const totalItems =
+    Number(g?.totalItems) ||
+    items.reduce((sum, i) => sum + Number(i?.quantity || 0), 0);
+  const totalAmount =
+    Number(g?.totalAmount) ||
+    items.reduce((sum, i) => sum + Number(i?.revenue || 0), 0);
+
+  return {
+    groupId: g?.groupId || "",
+    createdAt: g?.createdAt || new Date().toISOString(),
+    orderedBy: g?.orderedBy || "",
+    status: g?.status || "active",
+    totalItems,
+    totalAmount,
+    canceledAt: g?.canceledAt || null,
+    canceledBy: g?.canceledBy || "",
+    cancelReason: g?.cancelReason || "",
+    items: items.map((x) => ({
+      id: x?.id || x?._id || "",
+      productId: x?.productId,
+      productName: x?.productName || "",
+      size: x?.size || "",
+      quantity: Number(x?.quantity || 0),
+      revenue: Number(x?.revenue || 0),
+      cogs: Number(x?.cogs || 0),
+      status: x?.status || "active",
+    })),
+  };
+};
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState("");
@@ -413,8 +453,18 @@ export default function App() {
   const [alertMessage, setAlertMessage] = useState(null);
   const [activeTab, setActiveTab] = useState("All Products");
   const [selectedProduct, setSelectedProduct] = useState(null);
+  const [selectedSizeKey, setSelectedSizeKey] = useState("");
+  const [selectedQty, setSelectedQty] = useState(1);
   const [safeView, setView] = useState("POS");
   const [trendRange, setTrendRange] = useState("day");
+
+  const [cartItems, setCartItems] = useState([]);
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+
+  const [staffOrderGroups, setStaffOrderGroups] = useState([]);
+  const [isLoadingStaffOrders, setIsLoadingStaffOrders] = useState(false);
+  const [isCancelingGroupId, setIsCancelingGroupId] = useState("");
+  const [groupCancelReason, setGroupCancelReason] = useState({});
 
   const [staffAlerts, setStaffAlerts] = useState([]);
   const [restockQty, setRestockQty] = useState({});
@@ -462,7 +512,9 @@ export default function App() {
     let gp = 0;
 
     for (const o of orderList) {
-      sold[o.productId] = (sold[o.productId] || 0) + 1;
+      if (o.status === "canceled") continue;
+      const qty = Number(o.quantity || 1);
+      sold[o.productId] = (sold[o.productId] || 0) + qty;
       revenue[o.productId] = (revenue[o.productId] || 0) + (o.revenue || 0);
       gp += (o.revenue || 0) - (o.cogs || 0);
     }
@@ -472,6 +524,19 @@ export default function App() {
     setGrossProfit(gp);
   };
 
+  const refreshStaffOrderGroups = async () => {
+    setIsLoadingStaffOrders(true);
+    try {
+      const res = await apiFetch("/api/orders/staff");
+      const groups = (res?.groups || []).map(mapStaffGroup);
+      setStaffOrderGroups(groups);
+    } catch (err) {
+      toastError(err.message || "Failed to load staff orders.");
+    } finally {
+      setIsLoadingStaffOrders(false);
+    }
+  };
+
   const refreshProtectedData = async (roleArg) => {
     const role = roleArg || userRole;
 
@@ -479,16 +544,34 @@ export default function App() {
     const inv = invRes?.inventory || invRes || {};
     setInventory(inv);
 
+    if (role === "staff") {
+      await refreshStaffOrderGroups();
+      setOrders([]);
+      setSoldCounts({});
+      setRevenueByProduct({});
+      setGrossProfit(0);
+      setStaffAlerts([]);
+      setSupplierDeliveries([]);
+      return;
+    }
+
     if (role === "owner" || role === "admin") {
       const ordRes = await apiFetch("/api/orders");
       const rawOrders = ordRes?.orders || ordRes || [];
       const mappedOrders = rawOrders.map((o) => ({
+        id: o._id,
+        groupId: o.groupId || "",
         createdAt: o.createdAt,
         productId: o.productId,
         productName: o.productName,
         size: o.size,
+        quantity: Number(o.quantity || 1),
         revenue: o.revenue || 0,
         cogs: o.cogs || 0,
+        status: o.status || "active",
+        canceledAt: o.canceledAt || null,
+        canceledBy: o.canceledBy || "",
+        cancelReason: o.cancelReason || "",
       }));
       setOrders(mappedOrders);
       recalcStatsFromOrders(mappedOrders);
@@ -520,6 +603,14 @@ export default function App() {
         );
       } catch {
         // optional
+      }
+
+      // admin/owner can still view their own staff-style groups if needed
+      try {
+        const grpRes = await apiFetch("/api/orders/staff");
+        setStaffOrderGroups((grpRes?.groups || []).map(mapStaffGroup));
+      } catch {
+        setStaffOrderGroups([]);
       }
     }
   };
@@ -572,17 +663,17 @@ export default function App() {
   const handleRegister = async (e) => {
     e.preventDefault();
     setLoginError(null);
-  
+
     try {
       const fd = new FormData(e.currentTarget);
       const usernameVal = String(fd.get("username") || "").trim();
       const emailVal = String(fd.get("email") || "").trim();
       const passwordVal = String(fd.get("password") || "").trim();
-  
+
       if (!usernameVal || !emailVal || !passwordVal) {
         throw new Error("Please complete username, email, and password.");
       }
-  
+
       const data = await apiFetch("/api/auth/register", {
         method: "POST",
         body: JSON.stringify({
@@ -592,7 +683,7 @@ export default function App() {
           role: "staff",
         }),
       });
-  
+
       saveSession(data.token, data.user);
       setUserRole(data.user?.role || "staff");
       setIsRegistering(false);
@@ -611,6 +702,9 @@ export default function App() {
     setPassword("");
     setUserRole("staff");
     setLoginError(null);
+    setCartItems([]);
+    setStaffOrderGroups([]);
+    setOrders([]);
     setView("POS");
   };
 
@@ -734,24 +828,29 @@ export default function App() {
     }
   };
 
+  const activeOrders = useMemo(
+    () => orders.filter((o) => (o.status || "active") !== "canceled"),
+    [orders]
+  );
+
   const totalProductsCount = products.length;
   const allProductsCount = products.filter((p) => p.category !== "Add-Ons").length;
 
   const totalOrdersToday = useMemo(() => {
     const today = toLocalYMD(new Date());
-    return orders.filter((o) => toLocalYMD(o.createdAt) === today).length;
-  }, [orders]);
+    return activeOrders.filter((o) => toLocalYMD(o.createdAt) === today).length;
+  }, [activeOrders]);
 
   const totalSalesToday = useMemo(() => {
     const today = toLocalYMD(new Date());
-    return orders
+    return activeOrders
       .filter((o) => toLocalYMD(o.createdAt) === today)
       .reduce((sum, o) => sum + o.revenue, 0);
-  }, [orders]);
+  }, [activeOrders]);
 
   const ordersAllTimeRevenue = useMemo(
-    () => orders.reduce((sum, o) => sum + o.revenue, 0),
-    [orders]
+    () => activeOrders.reduce((sum, o) => sum + o.revenue, 0),
+    [activeOrders]
   );
 
   const computeNeeded = (product, sizeKey) => {
@@ -787,14 +886,24 @@ export default function App() {
     return total;
   };
 
-  const getStockForProductSize = (product, sizeKey) => {
+  const reservedMaterials = useMemo(() => {
+    const acc = {};
+    for (const line of cartItems) {
+      for (const [k, amt] of Object.entries(line.neededPerUnit || {})) {
+        acc[k] = (acc[k] || 0) + Number(amt || 0) * Number(line.qty || 0);
+      }
+    }
+    return acc;
+  }, [cartItems]);
+
+  const getStockForProductSize = (product, sizeKey, reservedMap = reservedMaterials) => {
     const needed = computeNeeded(product, sizeKey);
     if (!needed) return 0;
 
     let min = Infinity;
     for (const [k, amt] of Object.entries(needed)) {
       if (!amt || amt <= 0) continue;
-      const onHand = inventory[k] ?? 0;
+      const onHand = Math.max(0, (inventory[k] ?? 0) - (reservedMap[k] ?? 0));
       min = Math.min(min, Math.floor(onHand / amt));
     }
 
@@ -815,52 +924,264 @@ export default function App() {
     return Math.min(...sizeKeys.map((s) => getStockForProductSize(product, s)));
   };
 
-  const handlePurchase = async (product, sizeKey) => {
-    const needed = computeNeeded(product, sizeKey);
-    if (!needed) return;
+  const openProductModal = (product) => {
+    const firstSize = Object.keys(product.prices || {})[0] || "";
+    setSelectedProduct(product);
+    setSelectedSizeKey(firstSize);
+    setSelectedQty(1);
+  };
 
-    const revenue = Number(product.prices?.[sizeKey] || 0);
-    const cogs = computeCogs(needed);
+  const closeProductModal = () => {
+    setSelectedProduct(null);
+    setSelectedSizeKey("");
+    setSelectedQty(1);
+  };
 
-    try {
-      const res = await apiFetch("/api/orders", {
-        method: "POST",
-        body: JSON.stringify({
-          productId: product.id,
-          productName: product.name,
+  const handleAddSelectedToOrder = () => {
+    if (!selectedProduct) return;
+    const sizeKey = selectedSizeKey || Object.keys(selectedProduct.prices || {})[0];
+    const qty = Math.floor(Number(selectedQty) || 0);
+
+    if (!sizeKey) {
+      toastError("Please select a size.");
+      return;
+    }
+
+    if (!Number.isFinite(qty) || qty <= 0) {
+      toastError("Please enter a valid quantity.");
+      return;
+    }
+
+    const available = getStockForProductSize(selectedProduct, sizeKey);
+    if (available <= 0) {
+      toastError("Out of stock for this size.");
+      return;
+    }
+
+    if (qty > available) {
+      toastError(`Only ${available} available for ${selectedProduct.name} (${sizeKey}).`);
+      return;
+    }
+
+    const neededPerUnit = computeNeeded(selectedProduct, sizeKey);
+    if (!neededPerUnit) return;
+
+    const unitPrice = Number(selectedProduct.prices?.[sizeKey] || 0);
+    const unitCogs = computeCogs(neededPerUnit);
+    const lineId = `${selectedProduct.id}-${sizeKey}`;
+
+    setCartItems((prev) => {
+      const existing = prev.find((x) => x.id === lineId);
+      if (existing) {
+        return prev.map((x) =>
+          x.id === lineId
+            ? { ...x, qty: Number(x.qty || 0) + qty }
+            : x
+        );
+      }
+
+      return [
+        ...prev,
+        {
+          id: lineId,
+          productId: selectedProduct.id,
+          productName: selectedProduct.name,
+          category: selectedProduct.category,
           size: sizeKey,
-          revenue,
-          cogs,
-          needed,
-        }),
+          qty,
+          unitPrice,
+          unitCogs,
+          neededPerUnit,
+        },
+      ];
+    });
+
+    setAlertMessage(`Added to order: ${selectedProduct.name} (${sizeKey}) x${qty}`);
+    setTimeout(() => setAlertMessage(null), 1600);
+    closeProductModal();
+  };
+
+  const handleRemoveCartItem = (lineId) => {
+    setCartItems((prev) => prev.filter((x) => x.id !== lineId));
+  };
+
+  const handleClearOrder = () => {
+    setCartItems([]);
+  };
+
+  const getMaxQtyForLine = (line, sourceCart) => {
+    const reservedWithoutLine = {};
+    for (const item of sourceCart) {
+      if (item.id === line.id) continue;
+      for (const [k, amt] of Object.entries(item.neededPerUnit || {})) {
+        reservedWithoutLine[k] = (reservedWithoutLine[k] || 0) + Number(amt || 0) * Number(item.qty || 0);
+      }
+    }
+
+    let max = Infinity;
+    for (const [k, amt] of Object.entries(line.neededPerUnit || {})) {
+      if (!amt || amt <= 0) continue;
+      const onHand = Math.max(0, (inventory[k] ?? 0) - (reservedWithoutLine[k] ?? 0));
+      max = Math.min(max, Math.floor(onHand / amt));
+    }
+
+    if (max === Infinity) max = 0;
+    return Math.max(0, max);
+  };
+
+  const handleChangeCartQty = (lineId, nextQtyRaw) => {
+    let exceeded = false;
+
+    setCartItems((prev) => {
+      const idx = prev.findIndex((x) => x.id === lineId);
+      if (idx < 0) return prev;
+
+      const parsed = Math.floor(Number(nextQtyRaw) || 0);
+      if (parsed <= 0) {
+        return prev.filter((x) => x.id !== lineId);
+      }
+
+      const line = prev[idx];
+      const maxQty = getMaxQtyForLine(line, prev);
+      const safeQty = Math.min(parsed, maxQty);
+
+      if (parsed > maxQty) exceeded = true;
+      if (safeQty <= 0) return prev.filter((x) => x.id !== lineId);
+
+      const next = [...prev];
+      next[idx] = { ...line, qty: safeQty };
+      return next;
+    });
+
+    if (exceeded) {
+      toastError("Not enough stock for that quantity.");
+    }
+  };
+
+  const cartTotals = useMemo(() => {
+    const lines = cartItems.length;
+    const items = cartItems.reduce((sum, x) => sum + Number(x.qty || 0), 0);
+    const amount = cartItems.reduce(
+      (sum, x) => sum + Number(x.qty || 0) * Number(x.unitPrice || 0),
+      0
+    );
+
+    return { lines, items, amount };
+  }, [cartItems]);
+
+  const handleCheckoutOrder = async () => {
+    if (!cartItems.length) {
+      toastError("No items in order.");
+      return;
+    }
+
+    setIsSubmittingOrder(true);
+    try {
+      const payloadItems = cartItems.map((x) => ({
+        productId: x.productId,
+        productName: x.productName,
+        size: x.size,
+        quantity: Number(x.qty || 0),
+        revenue: Number(x.unitPrice || 0), // per unit
+        cogs: Number(x.unitCogs || 0), // per unit
+        neededPerUnit: x.neededPerUnit,
+      }));
+
+      const res = await apiFetch("/api/orders/checkout", {
+        method: "POST",
+        body: JSON.stringify({ items: payloadItems }),
       });
 
       if (res?.inventory) {
         setInventory((prev) => ({ ...prev, ...res.inventory }));
       }
 
-      const o = res?.order;
-      if (o) {
-        const nextOrders = [
-          ...orders,
-          {
-            createdAt: o.createdAt,
-            productId: o.productId,
-            productName: o.productName,
-            size: o.size,
-            revenue: o.revenue || 0,
-            cogs: o.cogs || 0,
-          },
-        ];
-        setOrders(nextOrders);
-        recalcStatsFromOrders(nextOrders);
+      const created = (res?.orders || []).map((o) => ({
+        id: o._id || o.id,
+        groupId: o.groupId || res?.group?.groupId || "",
+        createdAt: o.createdAt,
+        productId: o.productId,
+        productName: o.productName,
+        size: o.size,
+        quantity: Number(o.quantity || 1),
+        revenue: o.revenue || 0,
+        cogs: o.cogs || 0,
+        status: o.status || "active",
+        canceledAt: o.canceledAt || null,
+        canceledBy: o.canceledBy || "",
+        cancelReason: o.cancelReason || "",
+      }));
+
+      setOrders((prev) => {
+        const next = [...prev, ...created];
+        recalcStatsFromOrders(next);
+        return next;
+      });
+
+      if (res?.group) {
+        const mapped = mapStaffGroup(res.group);
+        setStaffOrderGroups((prev) => [mapped, ...prev.filter((g) => g.groupId !== mapped.groupId)]);
+      } else if (isStaff) {
+        await refreshStaffOrderGroups();
       }
 
-      setAlertMessage(`Success: ${product.name} (${sizeKey}) added!`);
-      setTimeout(() => setAlertMessage(null), 2000);
-      setSelectedProduct(null);
+      setCartItems([]);
+      setAlertMessage(`Order completed: ${cartTotals.items} item(s).`);
+      setTimeout(() => setAlertMessage(null), 2200);
     } catch (err) {
-      toastError(err.message || "Failed to create order.");
+      toastError(err.message || "Checkout failed.");
+    } finally {
+      setIsSubmittingOrder(false);
+    }
+  };
+
+  const handleCancelSubmittedGroup = async (groupId) => {
+    if (!groupId) return;
+    setIsCancelingGroupId(groupId);
+
+    try {
+      const reason = String(groupCancelReason[groupId] || "").trim() || "Customer changed mind";
+      const res = await apiFetch(`/api/orders/group/${groupId}/cancel`, {
+        method: "PATCH",
+        body: JSON.stringify({ reason }),
+      });
+
+      if (res?.inventory) {
+        setInventory((prev) => ({ ...prev, ...res.inventory }));
+      }
+
+      if (res?.group) {
+        const mapped = mapStaffGroup(res.group);
+        setStaffOrderGroups((prev) => {
+          const exists = prev.some((g) => g.groupId === mapped.groupId);
+          if (!exists) return [mapped, ...prev];
+          return prev.map((g) => (g.groupId === mapped.groupId ? mapped : g));
+        });
+      }
+
+      setOrders((prev) => {
+        const next = prev.map((o) =>
+          o.groupId === groupId
+            ? {
+                ...o,
+                status: "canceled",
+                canceledAt: res?.group?.canceledAt || new Date().toISOString(),
+                canceledBy: res?.group?.canceledBy || "",
+                cancelReason: res?.group?.cancelReason || reason,
+              }
+            : o
+        );
+        recalcStatsFromOrders(next);
+        return next;
+      });
+
+      setGroupCancelReason((prev) => ({ ...prev, [groupId]: "" }));
+      setAlertMessage(`Order ${groupId} canceled.`);
+      setTimeout(() => setAlertMessage(null), 2200);
+    } catch (err) {
+      toastError(err.message || "Cancel failed.");
+    } finally {
+      setIsCancelingGroupId("");
     }
   };
 
@@ -892,7 +1213,7 @@ export default function App() {
     };
 
     const sumByBucket = {};
-    for (const o of orders) {
+    for (const o of activeOrders) {
       const k = bucketKey(o.createdAt);
       sumByBucket[k] = (sumByBucket[k] || 0) + (o.revenue || 0);
     }
@@ -919,7 +1240,7 @@ export default function App() {
       label: labelFromBucket(k, trendRange),
       sales: sumByBucket[k] || 0,
     }));
-  }, [orders, trendRange]);
+  }, [activeOrders, trendRange]);
 
   const expenseTrendData = useMemo(() => {
     const now = new Date();
@@ -979,8 +1300,8 @@ export default function App() {
   );
 
   const totalCogsAllTime = useMemo(
-    () => orders.reduce((sum, o) => sum + (o.cogs || 0), 0),
-    [orders]
+    () => activeOrders.reduce((sum, o) => sum + (o.cogs || 0), 0),
+    [activeOrders]
   );
 
   const netProfitAfterExpenses = useMemo(
@@ -995,12 +1316,12 @@ export default function App() {
 
   const hourlyHeatmapData = useMemo(() => {
     const hours = Array.from({ length: 24 }, (_, h) => ({ hour: h, orders: 0 }));
-    for (const o of orders) {
+    for (const o of activeOrders) {
       const h = new Date(o.createdAt).getHours();
-      hours[h].orders += 1;
+      hours[h].orders += Number(o.quantity || 1);
     }
     return hours;
-  }, [orders]);
+  }, [activeOrders]);
 
   const peakHourMax = Math.max(1, ...hourlyHeatmapData.map((h) => h.orders));
 
@@ -1044,13 +1365,13 @@ export default function App() {
     }
 
     const salesByMonth = {};
-    for (const o of orders) {
+    for (const o of activeOrders) {
       const k = toLocalYM(o.createdAt);
       salesByMonth[k] = (salesByMonth[k] || 0) + (o.revenue || 0);
     }
 
     return buckets.map((m) => ({ month: m, sales: salesByMonth[m] || 0 }));
-  }, [orders]);
+  }, [activeOrders]);
 
   const avgFeedbackRating = useMemo(() => {
     if (!feedbackEntries.length) return 0;
@@ -1191,7 +1512,7 @@ export default function App() {
                       value={username}
                       onChange={(e) => setUsername(e.target.value)}
                       className="w-full pl-10 pr-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                      placeholder="owner / admin / staff"
+                      placeholder="Enter username"
                     />
                   </div>
                 </div>
@@ -1205,7 +1526,7 @@ export default function App() {
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       className="w-full pl-10 pr-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none"
-                      placeholder="1234"
+                      placeholder="Enter password"
                     />
                   </div>
                 </div>
@@ -1232,20 +1553,6 @@ export default function App() {
                 </div>
               </form>
             )}
-
-            {!isRegistering && (
-              <div className="mt-6 text-center text-xs text-stone-400 space-y-1 bg-stone-50 p-3 rounded-lg">
-                <p>
-                  <strong>Owner:</strong> owner / 1234
-                </p>
-                <p>
-                  <strong>Admin:</strong> admin / 1234
-                </p>
-                <p>
-                  <strong>Staff:</strong> staff / 1234
-                </p>
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -1256,15 +1563,25 @@ export default function App() {
     if (!selectedProduct) return null;
     const product = selectedProduct;
     const sizes = Object.entries(product.prices || {});
+    const activeSize = selectedSizeKey || sizes[0]?.[0] || "";
+    const availableForActive = activeSize ? getStockForProductSize(product, activeSize) : 0;
 
     return (
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
         <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all scale-100">
           <div className="h-32 relative">
-            <img src={product.image} className="w-full h-full object-cover" alt={product.name} />
+            <img
+              src={product.image}
+              className="w-full h-full object-cover"
+              alt={product.name}
+              onError={(e) => {
+                e.currentTarget.onerror = null;
+                e.currentTarget.src = FALLBACK_DRINK_IMAGE;
+              }}
+            />
             <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
             <button
-              onClick={() => setSelectedProduct(null)}
+              onClick={closeProductModal}
               className="absolute top-3 right-3 bg-white/20 hover:bg-white/40 text-white p-1 rounded-full backdrop-blur-md transition-colors"
             >
               <X size={20} />
@@ -1276,41 +1593,57 @@ export default function App() {
           </div>
 
           <div className="p-6">
-            <p className="text-stone-500 text-sm mb-4 font-medium">Select a size to add:</p>
-            <div className="space-y-3">
+            <p className="text-stone-500 text-sm mb-3 font-medium">Select size and quantity:</p>
+
+            <div className="grid grid-cols-3 gap-2 mb-4">
               {sizes.map(([sizeKey, price]) => {
-                const stockForThis = getStockForProductSize(product, sizeKey);
-                const disabled = stockForThis <= 0;
+                const left = getStockForProductSize(product, sizeKey);
+                const selected = activeSize === sizeKey;
+
                 return (
                   <button
                     key={sizeKey}
-                    onClick={() => handlePurchase(product, sizeKey)}
-                    disabled={disabled}
-                    className={`w-full flex justify-between items-center p-4 rounded-xl border transition-all ${
-                      disabled
-                        ? "bg-stone-100 text-stone-400 cursor-not-allowed border-stone-200"
-                        : "border-stone-200 hover:border-amber-600 hover:bg-amber-50 active:scale-[0.98]"
+                    type="button"
+                    onClick={() => setSelectedSizeKey(sizeKey)}
+                    className={`p-3 rounded-lg border text-left transition ${
+                      selected
+                        ? "border-amber-700 bg-amber-50"
+                        : "border-stone-200 hover:border-amber-400"
                     }`}
                   >
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-stone-100 text-stone-600 flex items-center justify-center text-xs font-bold">
-                        {String(sizeKey).charAt(0)}
-                      </div>
-                      <span className="font-bold text-stone-700 text-lg">{sizeKey}</span>
-                    </div>
-
-                    <div className="flex items-center gap-3">
-                      {disabled ? (
-                        <span className="text-xs font-bold text-red-600">OUT</span>
-                      ) : (
-                        <span className="text-xs font-bold text-green-600">~{stockForThis} left</span>
-                      )}
-                      <span className="font-bold text-amber-700 text-lg">₱{Number(price).toFixed(2)}</span>
+                    <div className="font-bold text-sm text-stone-800">{sizeKey}</div>
+                    <div className="text-xs text-amber-700 font-bold">₱{Number(price).toFixed(2)}</div>
+                    <div className={`text-[11px] ${left > 0 ? "text-green-600" : "text-red-600"}`}>
+                      {left > 0 ? `~${left} left` : "Out"}
                     </div>
                   </button>
                 );
               })}
             </div>
+
+            <div className="flex items-center gap-2 mb-4">
+              <label className="text-sm font-bold text-stone-700">Qty</label>
+              <input
+                type="number"
+                min="1"
+                value={selectedQty}
+                onChange={(e) => setSelectedQty(e.target.value)}
+                className="w-24 px-3 py-2 border border-stone-300 rounded-lg text-sm"
+              />
+              <span className="text-xs text-stone-500">Available: {availableForActive}</span>
+            </div>
+
+            <button
+              onClick={handleAddSelectedToOrder}
+              disabled={availableForActive <= 0}
+              className={`w-full py-3 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-all ${
+                availableForActive <= 0
+                  ? "bg-stone-100 text-stone-400 cursor-not-allowed"
+                  : "bg-amber-900 hover:bg-amber-800 text-white"
+              }`}
+            >
+              <ShoppingCart size={16} /> Add to Current Order
+            </button>
           </div>
         </div>
       </div>
@@ -1456,7 +1789,9 @@ export default function App() {
             <button
               onClick={() => setView("POS")}
               className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition ${
-                safeView === "POS" ? "bg-amber-100 text-amber-900" : "hover:bg-stone-50 text-stone-700"
+                safeView === "POS"
+                  ? "bg-amber-100 text-amber-900"
+                  : "hover:bg-stone-50 text-stone-700"
               }`}
             >
               <ShoppingCart size={16} /> POS
@@ -1466,7 +1801,9 @@ export default function App() {
               <button
                 onClick={() => setView("STOCK")}
                 className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition ${
-                  safeView === "STOCK" ? "bg-amber-100 text-amber-900" : "hover:bg-stone-50 text-stone-700"
+                  safeView === "STOCK"
+                    ? "bg-amber-100 text-amber-900"
+                    : "hover:bg-stone-50 text-stone-700"
                 }`}
               >
                 <Package size={16} /> Stock List
@@ -1477,7 +1814,9 @@ export default function App() {
               <button
                 onClick={() => setView("DASHBOARD")}
                 className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition ${
-                  safeView === "DASHBOARD" ? "bg-amber-100 text-amber-900" : "hover:bg-stone-50 text-stone-700"
+                  safeView === "DASHBOARD"
+                    ? "bg-amber-100 text-amber-900"
+                    : "hover:bg-stone-50 text-stone-700"
                 }`}
               >
                 <BarChart3 size={16} /> Dashboard
@@ -1541,6 +1880,10 @@ export default function App() {
                             src={product.image}
                             alt={product.name}
                             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                            onError={(e) => {
+                              e.currentTarget.onerror = null;
+                              e.currentTarget.src = FALLBACK_DRINK_IMAGE;
+                            }}
                           />
                           {product.matchScore > 0 && (
                             <div className="absolute top-2 right-2 bg-white/90 backdrop-blur text-green-800 text-xs font-bold px-2 py-1 rounded-full shadow-sm">
@@ -1581,7 +1924,7 @@ export default function App() {
                           </div>
 
                           <button
-                            onClick={() => setSelectedProduct(product)}
+                            onClick={() => openProductModal(product)}
                             disabled={liveStock <= 0}
                             className={`w-full py-2.5 rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-95 ${
                               liveStock <= 0
@@ -1598,7 +1941,8 @@ export default function App() {
                                 if (!neededMaterials) return;
 
                                 const lowMaterials = Object.keys(neededMaterials).filter(
-                                  (materialKey) => getHealthBadge(materialKey, inventory[materialKey]).label !== "Green"
+                                  (materialKey) =>
+                                    getHealthBadge(materialKey, inventory[materialKey]).label !== "Green"
                                 );
 
                                 if (!lowMaterials.length) {
@@ -1622,6 +1966,200 @@ export default function App() {
                 </div>
 
                 <div className="space-y-6">
+                  <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-sm">
+                    <div className="flex items-start justify-between mb-3">
+                      <h3 className="font-bold text-stone-800">Current Order</h3>
+                      <span className="text-xs px-2 py-1 rounded-full bg-stone-100 border border-stone-200">
+                        {cartTotals.items} item(s)
+                      </span>
+                    </div>
+
+                    {cartItems.length === 0 ? (
+                      <p className="text-sm text-stone-500">No items yet. Add drinks/add-ons to start an order.</p>
+                    ) : (
+                      <div className="space-y-3">
+                        {cartItems.map((line) => (
+                          <div key={line.id} className="border border-stone-200 rounded-lg p-3">
+                            <div className="flex justify-between items-start gap-2">
+                              <div>
+                                <div className="font-bold text-sm text-stone-800">
+                                  {line.productName} <span className="text-stone-500">({line.size})</span>
+                                </div>
+                                <div className="text-xs text-stone-500">₱{line.unitPrice.toFixed(2)} each</div>
+                              </div>
+                              <button
+                                onClick={() => handleRemoveCartItem(line.id)}
+                                className="text-xs px-2 py-1 rounded bg-red-100 text-red-700 hover:bg-red-200"
+                              >
+                                Remove
+                              </button>
+                            </div>
+
+                            <div className="mt-2 flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleChangeCartQty(line.id, Number(line.qty) - 1)}
+                                  className="w-7 h-7 rounded border border-stone-300 text-stone-700 hover:bg-stone-50"
+                                >
+                                  -
+                                </button>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  value={line.qty}
+                                  onChange={(e) => handleChangeCartQty(line.id, e.target.value)}
+                                  className="w-16 px-2 py-1 border border-stone-300 rounded text-center text-sm"
+                                />
+                                <button
+                                  onClick={() => handleChangeCartQty(line.id, Number(line.qty) + 1)}
+                                  className="w-7 h-7 rounded border border-stone-300 text-stone-700 hover:bg-stone-50"
+                                >
+                                  +
+                                </button>
+                              </div>
+
+                              <div className="font-bold text-sm text-amber-800">
+                                ₱{(Number(line.qty) * Number(line.unitPrice)).toFixed(2)}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+
+                        <div className="border-t border-stone-200 pt-3 space-y-1 text-sm">
+                          <div className="flex justify-between">
+                            <span>Total Lines</span>
+                            <strong>{cartTotals.lines}</strong>
+                          </div>
+                          <div className="flex justify-between">
+                            <span>Total Items</span>
+                            <strong>{cartTotals.items}</strong>
+                          </div>
+                          <div className="flex justify-between text-amber-800 font-bold">
+                            <span>Total Amount</span>
+                            <strong>₱{cartTotals.amount.toFixed(2)}</strong>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2 pt-2">
+                          <button
+                            onClick={handleClearOrder}
+                            className="flex-1 py-2 rounded-lg border border-stone-300 text-stone-700 hover:bg-stone-50 text-sm font-bold"
+                          >
+                            Clear Order
+                          </button>
+                          <button
+                            onClick={handleCheckoutOrder}
+                            disabled={isSubmittingOrder}
+                            className={`flex-1 py-2 rounded-lg text-white text-sm font-bold ${
+                              isSubmittingOrder
+                                ? "bg-stone-400 cursor-not-allowed"
+                                : "bg-emerald-600 hover:bg-emerald-700"
+                            }`}
+                          >
+                            {isSubmittingOrder ? "Placing..." : "Checkout"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {isStaff && (
+                    <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-sm">
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="font-bold text-stone-800">Submitted Orders</h3>
+                        <button
+                          onClick={refreshStaffOrderGroups}
+                          className="text-xs px-2 py-1 rounded bg-stone-100 border border-stone-300 hover:bg-stone-200"
+                        >
+                          Refresh
+                        </button>
+                      </div>
+
+                      {isLoadingStaffOrders ? (
+                        <p className="text-sm text-stone-500">Loading submitted orders...</p>
+                      ) : staffOrderGroups.length === 0 ? (
+                        <p className="text-sm text-stone-500">No submitted orders yet.</p>
+                      ) : (
+                        <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
+                          {staffOrderGroups.map((g) => (
+                            <div key={g.groupId} className="border border-stone-200 rounded-lg p-3">
+                              <div className="flex justify-between items-start gap-2">
+                                <div>
+                                  <div className="font-bold text-sm text-stone-800">{g.groupId}</div>
+                                  <div className="text-xs text-stone-500">{formatDateTime(g.createdAt)}</div>
+                                </div>
+                                <span
+                                  className={`text-[11px] px-2 py-1 rounded-full border ${
+                                    g.status === "active"
+                                      ? "bg-emerald-100 text-emerald-700 border-emerald-300"
+                                      : "bg-red-100 text-red-700 border-red-300"
+                                  }`}
+                                >
+                                  {g.status}
+                                </span>
+                              </div>
+
+                              <div className="mt-2 text-xs text-stone-600">
+                                <div className="flex justify-between">
+                                  <span>Total Items</span>
+                                  <strong>{g.totalItems}</strong>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span>Total Amount</span>
+                                  <strong>₱{Number(g.totalAmount).toFixed(2)}</strong>
+                                </div>
+                              </div>
+
+                              <div className="mt-2 border-t border-stone-100 pt-2 space-y-1">
+                                {g.items.map((x) => (
+                                  <div key={x.id} className="flex justify-between text-xs">
+                                    <span>
+                                      {x.productName} ({x.size}) x{x.quantity}
+                                    </span>
+                                    <strong>₱{Number(x.revenue).toFixed(2)}</strong>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {g.status === "active" ? (
+                                <div className="mt-3 flex items-center gap-2">
+                                  <input
+                                    type="text"
+                                    placeholder="Cancel reason (optional)"
+                                    value={groupCancelReason[g.groupId] || ""}
+                                    onChange={(e) =>
+                                      setGroupCancelReason((prev) => ({
+                                        ...prev,
+                                        [g.groupId]: e.target.value,
+                                      }))
+                                    }
+                                    className="flex-1 px-2 py-1.5 border border-stone-300 rounded text-xs"
+                                  />
+                                  <button
+                                    onClick={() => handleCancelSubmittedGroup(g.groupId)}
+                                    disabled={isCancelingGroupId === g.groupId}
+                                    className={`px-3 py-1.5 rounded text-xs font-bold ${
+                                      isCancelingGroupId === g.groupId
+                                        ? "bg-stone-300 text-stone-600 cursor-not-allowed"
+                                        : "bg-red-600 hover:bg-red-700 text-white"
+                                    }`}
+                                  >
+                                    {isCancelingGroupId === g.groupId ? "Canceling..." : "Cancel"}
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                                  Canceled by {g.canceledBy || "N/A"} • {g.cancelReason || "No reason"} •{" "}
+                                  {formatDateTime(g.canceledAt)}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   <div className="bg-stone-900 text-white p-6 rounded-xl shadow-xl">
                     <h2 className="text-lg font-bold mb-1">Live Inventory</h2>
                     <p className="text-stone-400 text-xs mb-4">Updates after each sale</p>
@@ -1630,20 +2168,20 @@ export default function App() {
                       <div className="flex justify-between items-center p-3 bg-white/10 rounded-lg">
                         <span className="text-sm">Total Cups</span>
                         <span className="font-bold text-xl">
-                          {inventory.cups12oz + inventory.cups16oz + inventory.cups22oz}
+                          {(inventory.cups12oz || 0) + (inventory.cups16oz || 0) + (inventory.cups22oz || 0)}
                         </span>
                       </div>
                       <div className="flex justify-between items-center p-3 bg-white/10 rounded-lg">
                         <span className="text-sm">Coffee Beans</span>
-                        <span className="font-bold text-xl">{inventory.coffeeBeans}g</span>
+                        <span className="font-bold text-xl">{inventory.coffeeBeans || 0}g</span>
                       </div>
                       <div className="flex justify-between items-center p-3 bg-white/10 rounded-lg">
                         <span className="text-sm">Milk Stock</span>
-                        <span className="font-bold text-xl">{inventory.milk}ml</span>
+                        <span className="font-bold text-xl">{inventory.milk || 0}ml</span>
                       </div>
                       <div className="flex justify-between items-center p-3 bg-white/10 rounded-lg">
                         <span className="text-sm">Sugar Syrup</span>
-                        <span className="font-bold text-xl">{inventory.sugarSyrup}ml</span>
+                        <span className="font-bold text-xl">{inventory.sugarSyrup || 0}ml</span>
                       </div>
                     </div>
 
