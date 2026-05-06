@@ -460,6 +460,23 @@ const mapStaffUser = (u) => ({
   updatedAt: u?.updatedAt || "",
 });
 
+const isOpenOrderStatus = (status) =>
+  ["active", "processing", "ready"].includes(status || "active");
+
+const orderStatusLabel = (status) => {
+  if (status === "ready") return "Ready";
+  if (status === "completed") return "Completed";
+  if (status === "canceled") return "Canceled";
+  return "Processing";
+};
+
+const orderStatusBadgeClass = (status) => {
+  if (status === "ready") return "bg-blue-100 text-blue-700 border-blue-300";
+  if (status === "completed") return "bg-emerald-100 text-emerald-700 border-emerald-300";
+  if (status === "canceled") return "bg-red-100 text-red-700 border-red-300";
+  return "bg-amber-100 text-amber-700 border-amber-300";
+};
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState("");
@@ -489,6 +506,7 @@ export default function App() {
   const [isLoadingStaffOrders, setIsLoadingStaffOrders] = useState(false);
   const [isLoadingOrderHistory, setIsLoadingOrderHistory] = useState(false);
   const [isCancelingGroupId, setIsCancelingGroupId] = useState("");
+  const [isUpdatingOrderStatusId, setIsUpdatingOrderStatusId] = useState("");
   const [groupCancelReason, setGroupCancelReason] = useState({});
 
   const [staffAlerts, setStaffAlerts] = useState([]);
@@ -561,7 +579,7 @@ export default function App() {
       const res = await apiFetch("/api/orders/staff");
       const groups = (res?.groups || [])
         .map(mapStaffGroup)
-        .filter((g) => (g.status || "active") === "active");
+        .filter((g) => isOpenOrderStatus(g.status));
       setStaffOrderGroups(groups);
     } catch (err) {
       toastError(err.message || "Failed to load staff orders.");
@@ -573,7 +591,7 @@ export default function App() {
   const refreshOrderHistoryGroups = async () => {
     setIsLoadingOrderHistory(true);
     try {
-      const res = await apiFetch("/api/orders/staff?includeCanceled=true");
+      const res = await apiFetch("/api/orders/staff?history=true");
       setStaffOrderHistoryGroups((res?.groups || []).map(mapStaffGroup));
     } catch (err) {
       toastError(err.message || "Failed to load order history.");
@@ -670,14 +688,14 @@ export default function App() {
         setStaffOrderGroups(
           (grpRes?.groups || [])
             .map(mapStaffGroup)
-            .filter((g) => (g.status || "active") === "active")
+            .filter((g) => isOpenOrderStatus(g.status))
         );
       } catch {
         setStaffOrderGroups([]);
       }
 
       try {
-        const historyRes = await apiFetch("/api/orders/staff?includeCanceled=true");
+        const historyRes = await apiFetch("/api/orders/staff?history=true");
         setStaffOrderHistoryGroups((historyRes?.groups || []).map(mapStaffGroup));
       } catch {
         setStaffOrderHistoryGroups([]);
@@ -782,6 +800,7 @@ export default function App() {
     setCartItems([]);
     setStaffOrderGroups([]);
     setStaffOrderHistoryGroups([]);
+    setIsUpdatingOrderStatusId("");
     setStaffUsers([]);
     setStaffUserForm(EMPTY_STAFF_USER_FORM);
     setEditingStaffUserId("");
@@ -1310,12 +1329,44 @@ export default function App() {
       }
 
       setCartItems([]);
-      setAlertMessage(`Order completed: ${cartTotals.items} item(s).`);
+      setAlertMessage(`Order submitted: ${cartTotals.items} item(s).`);
       setTimeout(() => setAlertMessage(null), 2200);
     } catch (err) {
       toastError(err.message || "Checkout failed.");
     } finally {
       setIsSubmittingOrder(false);
+    }
+  };
+
+  const handleUpdateSubmittedGroupStatus = async (groupId, status) => {
+    if (!groupId || !status) return;
+    setIsUpdatingOrderStatusId(groupId);
+
+    try {
+      const res = await apiFetch(`/api/orders/group/${groupId}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
+      });
+
+      if (res?.group) {
+        const mapped = mapStaffGroup(res.group);
+        if (isOpenOrderStatus(mapped.status)) {
+          setStaffOrderGroups((prev) => prev.map((g) => (g.groupId === mapped.groupId ? mapped : g)));
+        } else {
+          setStaffOrderGroups((prev) => prev.filter((g) => g.groupId !== mapped.groupId));
+          setStaffOrderHistoryGroups((prev) => [mapped, ...prev.filter((g) => g.groupId !== mapped.groupId)]);
+        }
+      } else {
+        await refreshStaffOrderGroups();
+        await refreshOrderHistoryGroups();
+      }
+
+      setAlertMessage(`Order ${groupId} marked ${orderStatusLabel(status).toLowerCase()}.`);
+      setTimeout(() => setAlertMessage(null), 2000);
+    } catch (err) {
+      toastError(err.message || "Failed to update order status.");
+    } finally {
+      setIsUpdatingOrderStatusId("");
     }
   };
 
@@ -2282,7 +2333,7 @@ export default function App() {
                   {(isStaff || isAdmin || isOwner) && (
                     <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-sm">
                       <div className="flex items-center justify-between mb-3">
-                        <h3 className="font-bold text-stone-800">Submitted Orders</h3>
+                        <h3 className="font-bold text-stone-800">Order Queue</h3>
                         <button
                           onClick={refreshStaffOrderGroups}
                           className="text-xs px-2 py-1 rounded bg-stone-100 border border-stone-300 hover:bg-stone-200"
@@ -2292,9 +2343,9 @@ export default function App() {
                       </div>
 
                       {isLoadingStaffOrders ? (
-                        <p className="text-sm text-stone-500">Loading submitted orders...</p>
+                        <p className="text-sm text-stone-500">Loading order queue...</p>
                       ) : staffOrderGroups.length === 0 ? (
-                        <p className="text-sm text-stone-500">No submitted orders yet.</p>
+                        <p className="text-sm text-stone-500">No orders being prepared.</p>
                       ) : (
                         <div className="space-y-3 max-h-[420px] overflow-auto pr-1">
                           {staffOrderGroups.map((g) => (
@@ -2305,13 +2356,9 @@ export default function App() {
                                   <div className="text-xs text-stone-500">{formatDateTime(g.createdAt)}</div>
                                 </div>
                                 <span
-                                  className={`text-[11px] px-2 py-1 rounded-full border ${
-                                    g.status === "active"
-                                      ? "bg-emerald-100 text-emerald-700 border-emerald-300"
-                                      : "bg-red-100 text-red-700 border-red-300"
-                                  }`}
+                                  className={`text-[11px] px-2 py-1 rounded-full border font-bold ${orderStatusBadgeClass(g.status)}`}
                                 >
-                                  {g.status}
+                                  {orderStatusLabel(g.status)}
                                 </span>
                               </div>
 
@@ -2337,8 +2384,41 @@ export default function App() {
                                 ))}
                               </div>
 
-                              {g.status === "active" ? (
-                                <div className="mt-3 flex items-center gap-2">
+                              {isOpenOrderStatus(g.status) ? (
+                                <div className="mt-3 space-y-2">
+                                  <div className="flex flex-wrap gap-2">
+                                    {(g.status === "active" || g.status === "processing") && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateSubmittedGroupStatus(g.groupId, "ready")}
+                                        disabled={isUpdatingOrderStatusId === g.groupId}
+                                        className={`px-3 py-1.5 rounded text-xs font-bold ${
+                                          isUpdatingOrderStatusId === g.groupId
+                                            ? "bg-stone-300 text-stone-600 cursor-not-allowed"
+                                            : "bg-blue-600 hover:bg-blue-700 text-white"
+                                        }`}
+                                      >
+                                        {isUpdatingOrderStatusId === g.groupId ? "Updating..." : "Mark Ready"}
+                                      </button>
+                                    )}
+
+                                    {g.status === "ready" && (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleUpdateSubmittedGroupStatus(g.groupId, "completed")}
+                                        disabled={isUpdatingOrderStatusId === g.groupId}
+                                        className={`px-3 py-1.5 rounded text-xs font-bold ${
+                                          isUpdatingOrderStatusId === g.groupId
+                                            ? "bg-stone-300 text-stone-600 cursor-not-allowed"
+                                            : "bg-emerald-600 hover:bg-emerald-700 text-white"
+                                        }`}
+                                      >
+                                        {isUpdatingOrderStatusId === g.groupId ? "Updating..." : "Mark Completed"}
+                                      </button>
+                                    )}
+                                  </div>
+
+                                  <div className="flex items-center gap-2">
                                   <input
                                     type="text"
                                     placeholder="Cancel reason (optional)"
@@ -2362,6 +2442,7 @@ export default function App() {
                                   >
                                     {isCancelingGroupId === g.groupId ? "Canceling..." : "Cancel"}
                                   </button>
+                                  </div>
                                 </div>
                               ) : (
                                 <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
@@ -2464,13 +2545,11 @@ export default function App() {
                               </div>
 
                               <span
-                                className={`text-xs px-3 py-1 rounded-full border font-bold ${
-                                  isCanceled
-                                    ? "bg-red-100 text-red-700 border-red-300"
-                                    : "bg-emerald-100 text-emerald-700 border-emerald-300"
-                                }`}
+                                className={`text-xs px-3 py-1 rounded-full border font-bold ${orderStatusBadgeClass(
+                                  g.status
+                                )}`}
                               >
-                                {isCanceled ? "Canceled" : "Complete"}
+                                {isCanceled ? "Canceled" : "Completed"}
                               </span>
                             </div>
 
