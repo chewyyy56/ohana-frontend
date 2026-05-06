@@ -1756,8 +1756,8 @@ export default function App() {
 
       {renderSizeModal()}
 
-      <div className="flex">
-        <aside className="w-72 bg-white border-r border-stone-200 min-h-screen p-5">
+      <div className="flex items-start">
+        <aside className="sticky top-0 h-screen w-72 shrink-0 overflow-y-auto bg-white border-r border-stone-200 p-5">
           <div className="flex items-center gap-3 mb-6">
             <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-100 flex items-center justify-center text-amber-900">
               <Coffee size={20} />
@@ -1834,18 +1834,18 @@ export default function App() {
           </div>
         </aside>
 
-        <main className="flex-1 p-6">
+        <main className="flex-1 min-w-0 p-6">
           {safeView === "POS" && (
             <div>
-              <div className="flex justify-between items-center mb-6">
-                <div className="flex gap-2 overflow-x-auto pb-2">
+              <div className="sticky top-0 z-30 -mx-6 mb-6 border-b border-stone-200 bg-[#FDFBF7]/95 px-6 py-4 backdrop-blur">
+                <div className="flex gap-2 overflow-x-auto py-1">
                   {["All Products", ...categories].map((tab) => (
                     <button
                       key={tab}
                       onClick={() => setActiveTab(tab)}
-                      className={`px-5 py-2.5 rounded-full text-sm font-bold transition-all shadow-sm ${
+                      className={`shrink-0 px-5 py-2.5 rounded-full text-sm font-bold transition-all shadow-sm ${
                         activeTab === tab
-                          ? "bg-amber-900 text-white shadow-md scale-105"
+                          ? "bg-amber-900 text-white shadow-md"
                           : "bg-white text-stone-600 border border-stone-200 hover:bg-stone-50"
                       }`}
                     >
@@ -1855,8 +1855,8 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+                <div className="lg:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4 content-start">
                   {(activeTab === "All Products"
                     ? products.filter((p) => p.category !== "Add-Ons")
                     : products.filter((p) => p.category === activeTab)
