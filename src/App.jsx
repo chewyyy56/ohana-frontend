@@ -12,10 +12,16 @@ import {
   Calendar,
   Shield,
   UserCircle,
+  Users,
   Mail,
   Download,
   BellRing,
   CheckCircle,
+  History,
+  Trash2,
+  Pencil,
+  Save,
+  Plus,
 } from "lucide-react";
 import {
   AreaChart,
@@ -437,6 +443,23 @@ const mapStaffGroup = (g) => {
   };
 };
 
+const EMPTY_STAFF_USER_FORM = {
+  username: "",
+  email: "",
+  password: "",
+  role: "staff",
+};
+
+const mapStaffUser = (u) => ({
+  id: u?.id || u?._id || "",
+  username: u?.username || "",
+  email: u?.email || "",
+  role: u?.role || "staff",
+  active: u?.active !== false,
+  createdAt: u?.createdAt || "",
+  updatedAt: u?.updatedAt || "",
+});
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [username, setUsername] = useState("");
@@ -462,12 +485,20 @@ export default function App() {
   const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
 
   const [staffOrderGroups, setStaffOrderGroups] = useState([]);
+  const [staffOrderHistoryGroups, setStaffOrderHistoryGroups] = useState([]);
   const [isLoadingStaffOrders, setIsLoadingStaffOrders] = useState(false);
+  const [isLoadingOrderHistory, setIsLoadingOrderHistory] = useState(false);
   const [isCancelingGroupId, setIsCancelingGroupId] = useState("");
   const [groupCancelReason, setGroupCancelReason] = useState({});
 
   const [staffAlerts, setStaffAlerts] = useState([]);
   const [restockQty, setRestockQty] = useState({});
+
+  const [staffUsers, setStaffUsers] = useState([]);
+  const [isLoadingStaffUsers, setIsLoadingStaffUsers] = useState(false);
+  const [staffUserForm, setStaffUserForm] = useState(EMPTY_STAFF_USER_FORM);
+  const [editingStaffUserId, setEditingStaffUserId] = useState("");
+  const [staffUserEditForm, setStaffUserEditForm] = useState(EMPTY_STAFF_USER_FORM);
 
   const [supplierDeliveries, setSupplierDeliveries] = useState([]);
 
@@ -539,6 +570,31 @@ export default function App() {
     }
   };
 
+  const refreshOrderHistoryGroups = async () => {
+    setIsLoadingOrderHistory(true);
+    try {
+      const res = await apiFetch("/api/orders/staff?includeCanceled=true");
+      setStaffOrderHistoryGroups((res?.groups || []).map(mapStaffGroup));
+    } catch (err) {
+      toastError(err.message || "Failed to load order history.");
+    } finally {
+      setIsLoadingOrderHistory(false);
+    }
+  };
+
+  const refreshStaffUsers = async () => {
+    if (!(userRole === "admin" || userRole === "owner")) return;
+    setIsLoadingStaffUsers(true);
+    try {
+      const res = await apiFetch("/api/users");
+      setStaffUsers((res?.users || []).map(mapStaffUser));
+    } catch (err) {
+      toastError(err.message || "Failed to load staff accounts.");
+    } finally {
+      setIsLoadingStaffUsers(false);
+    }
+  };
+
   const refreshProtectedData = async (roleArg) => {
     const role = roleArg || userRole;
 
@@ -548,6 +604,7 @@ export default function App() {
 
     if (role === "staff") {
       await refreshStaffOrderGroups();
+      await refreshOrderHistoryGroups();
       setOrders([]);
       setSoldCounts({});
       setRevenueByProduct({});
@@ -617,6 +674,20 @@ export default function App() {
         );
       } catch {
         setStaffOrderGroups([]);
+      }
+
+      try {
+        const historyRes = await apiFetch("/api/orders/staff?includeCanceled=true");
+        setStaffOrderHistoryGroups((historyRes?.groups || []).map(mapStaffGroup));
+      } catch {
+        setStaffOrderHistoryGroups([]);
+      }
+
+      try {
+        const usersRes = await apiFetch("/api/users");
+        setStaffUsers((usersRes?.users || []).map(mapStaffUser));
+      } catch {
+        setStaffUsers([]);
       }
     }
   };
@@ -710,6 +781,11 @@ export default function App() {
     setLoginError(null);
     setCartItems([]);
     setStaffOrderGroups([]);
+    setStaffOrderHistoryGroups([]);
+    setStaffUsers([]);
+    setStaffUserForm(EMPTY_STAFF_USER_FORM);
+    setEditingStaffUserId("");
+    setStaffUserEditForm(EMPTY_STAFF_USER_FORM);
     setOrders([]);
     setView("POS");
   };
@@ -831,6 +907,106 @@ export default function App() {
       setTimeout(() => setAlertMessage(null), 1800);
     } catch (err) {
       toastError(err.message || "Failed to add delivery.");
+    }
+  };
+
+  const handleCreateStaffUser = async (e) => {
+    e.preventDefault();
+    if (!(isAdmin || isOwner)) return;
+
+    try {
+      const payload = {
+        username: staffUserForm.username.trim(),
+        email: staffUserForm.email.trim(),
+        password: staffUserForm.password,
+        role: isOwner ? staffUserForm.role : "staff",
+      };
+
+      if (!payload.username || !payload.password) {
+        toastError("Username and password are required.");
+        return;
+      }
+
+      const res = await apiFetch("/api/users", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+
+      if (res?.user) {
+        setStaffUsers((prev) => [mapStaffUser(res.user), ...prev]);
+      } else {
+        await refreshStaffUsers();
+      }
+
+      setStaffUserForm(EMPTY_STAFF_USER_FORM);
+      setAlertMessage("Staff account created.");
+      setTimeout(() => setAlertMessage(null), 1800);
+    } catch (err) {
+      toastError(err.message || "Failed to create staff account.");
+    }
+  };
+
+  const startEditStaffUser = (user) => {
+    setEditingStaffUserId(user.id);
+    setStaffUserEditForm({
+      username: user.username,
+      email: user.email,
+      password: "",
+      role: user.role || "staff",
+    });
+  };
+
+  const handleUpdateStaffUser = async (id) => {
+    if (!(isAdmin || isOwner) || !id) return;
+
+    try {
+      const payload = {
+        username: staffUserEditForm.username.trim(),
+        email: staffUserEditForm.email.trim(),
+        role: isOwner ? staffUserEditForm.role : "staff",
+      };
+
+      if (staffUserEditForm.password) {
+        payload.password = staffUserEditForm.password;
+      }
+
+      const res = await apiFetch(`/api/users/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      });
+
+      if (res?.user) {
+        const mapped = mapStaffUser(res.user);
+        setStaffUsers((prev) => prev.map((u) => (u.id === mapped.id ? mapped : u)));
+      } else {
+        await refreshStaffUsers();
+      }
+
+      setEditingStaffUserId("");
+      setStaffUserEditForm(EMPTY_STAFF_USER_FORM);
+      setAlertMessage("Staff account updated.");
+      setTimeout(() => setAlertMessage(null), 1800);
+    } catch (err) {
+      toastError(err.message || "Failed to update staff account.");
+    }
+  };
+
+  const handleDeleteStaffUser = async (id) => {
+    if (!(isAdmin || isOwner) || !id) return;
+    const ok = window.confirm("Delete this staff account?");
+    if (!ok) return;
+
+    try {
+      await apiFetch(`/api/users/${id}`, { method: "DELETE" });
+      setStaffUsers((prev) => prev.filter((u) => u.id !== id));
+      if (editingStaffUserId === id) {
+        setEditingStaffUserId("");
+        setStaffUserEditForm(EMPTY_STAFF_USER_FORM);
+      }
+      setAlertMessage("Staff account deleted.");
+      setTimeout(() => setAlertMessage(null), 1800);
+    } catch (err) {
+      toastError(err.message || "Failed to delete staff account.");
     }
   };
 
@@ -1127,8 +1303,10 @@ export default function App() {
       if (res?.group) {
         const mapped = mapStaffGroup(res.group);
         setStaffOrderGroups((prev) => [mapped, ...prev.filter((g) => g.groupId !== mapped.groupId)]);
+        setStaffOrderHistoryGroups((prev) => [mapped, ...prev.filter((g) => g.groupId !== mapped.groupId)]);
       } else if (isStaff) {
         await refreshStaffOrderGroups();
+        await refreshOrderHistoryGroups();
       }
 
       setCartItems([]);
@@ -1157,7 +1335,9 @@ export default function App() {
       }
 
       if (res?.group) {
+        const mapped = mapStaffGroup(res.group);
         setStaffOrderGroups((prev) => prev.filter((g) => g.groupId !== groupId));
+        setStaffOrderHistoryGroups((prev) => [mapped, ...prev.filter((g) => g.groupId !== groupId)]);
       }
 
       setOrders((prev) => {
@@ -1414,7 +1594,12 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-stone-100 flex items-center justify-center p-4">
+      <div
+        className="min-h-screen flex items-center justify-center p-4 bg-cover bg-center"
+        style={{
+          backgroundImage: `linear-gradient(120deg, rgba(28, 25, 23, 0.74), rgba(120, 53, 15, 0.45)), url("${FALLBACK_DRINK_IMAGE}")`,
+        }}
+      >
         {alertMessage && (
           <div
             className={`fixed top-10 z-[60] px-6 py-4 rounded-xl shadow-lg border-l-4 animate-bounce ${
@@ -1427,8 +1612,8 @@ export default function App() {
           </div>
         )}
 
-        <div className="bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden flex flex-col">
-          <div className="bg-amber-900 p-8 text-center relative overflow-hidden">
+        <div className="bg-white/95 backdrop-blur w-full max-w-md rounded-2xl shadow-2xl overflow-hidden flex flex-col border border-white/40">
+          <div className="bg-amber-950/90 p-8 text-center relative overflow-hidden">
             <div className="w-20 h-20 bg-amber-100 rounded-full absolute -top-8 -left-8 opacity-10" />
             <div className="w-24 h-24 bg-amber-100 rounded-full absolute -bottom-10 -right-10 opacity-10" />
             <h1 className="text-2xl font-bold text-white relative z-10">Ohana Cafe System</h1>
@@ -1798,6 +1983,20 @@ export default function App() {
               <ShoppingCart size={16} /> POS
             </button>
 
+            <button
+              onClick={() => {
+                setView("HISTORY");
+                refreshOrderHistoryGroups();
+              }}
+              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition ${
+                safeView === "HISTORY"
+                  ? "bg-amber-100 text-amber-900"
+                  : "hover:bg-stone-50 text-stone-700"
+              }`}
+            >
+              <History size={16} /> Order History
+            </button>
+
             {(isOwner || isAdmin) && (
               <button
                 onClick={() => setView("STOCK")}
@@ -1808,6 +2007,22 @@ export default function App() {
                 }`}
               >
                 <Package size={16} /> Stock List
+              </button>
+            )}
+
+            {(isOwner || isAdmin) && (
+              <button
+                onClick={() => {
+                  setView("STAFF");
+                  refreshStaffUsers();
+                }}
+                className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition ${
+                  safeView === "STAFF"
+                    ? "bg-amber-100 text-amber-900"
+                    : "hover:bg-stone-50 text-stone-700"
+                }`}
+              >
+                <Users size={16} /> Staff Accounts
               </button>
             )}
 
@@ -2200,6 +2415,255 @@ export default function App() {
                     <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-sm">
                       <h3 className="font-bold text-stone-800 mb-2 text-sm">Owner Analytics</h3>
                       <p className="text-stone-500 text-xs">Dashboard includes Sales Analytics + CSV Export.</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {safeView === "HISTORY" && (
+            <div>
+              <div className="flex justify-between items-end mb-6">
+                <div>
+                  <h2 className="text-2xl font-bold text-stone-800">Order History</h2>
+                  <p className="text-stone-500 text-sm">Completed and canceled order records</p>
+                </div>
+
+                <button
+                  onClick={refreshOrderHistoryGroups}
+                  className="bg-white hover:bg-stone-50 text-stone-700 border border-stone-300 font-bold px-4 py-2 rounded-lg text-sm transition shadow-sm inline-flex items-center gap-2"
+                >
+                  <History size={16} /> Refresh
+                </button>
+              </div>
+
+              <div className="bg-white rounded-xl border border-stone-200 shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-stone-100">
+                  <h3 className="font-bold text-stone-800">Transaction Records</h3>
+                </div>
+
+                <div className="p-6">
+                  {isLoadingOrderHistory ? (
+                    <p className="text-sm text-stone-500">Loading order history...</p>
+                  ) : staffOrderHistoryGroups.length === 0 ? (
+                    <p className="text-sm text-stone-500">No order history yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {staffOrderHistoryGroups.map((g) => {
+                        const isCanceled = (g.status || "active") === "canceled";
+                        return (
+                          <div key={g.groupId} className="border border-stone-200 rounded-xl p-4 bg-white">
+                            <div className="flex justify-between items-start gap-3">
+                              <div>
+                                <div className="font-bold text-stone-800">{g.groupId}</div>
+                                <div className="text-xs text-stone-500">
+                                  {formatDateTime(g.createdAt)}
+                                  {(isOwner || isAdmin) && g.orderedBy ? ` • Staff: ${g.orderedBy}` : ""}
+                                </div>
+                              </div>
+
+                              <span
+                                className={`text-xs px-3 py-1 rounded-full border font-bold ${
+                                  isCanceled
+                                    ? "bg-red-100 text-red-700 border-red-300"
+                                    : "bg-emerald-100 text-emerald-700 border-emerald-300"
+                                }`}
+                              >
+                                {isCanceled ? "Canceled" : "Complete"}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-sm">
+                              <div className="bg-stone-50 rounded-lg p-3 border border-stone-100">
+                                <div className="text-xs text-stone-500 font-bold">Total Items</div>
+                                <div className="text-lg font-extrabold text-stone-800">{g.totalItems}</div>
+                              </div>
+                              <div className="bg-stone-50 rounded-lg p-3 border border-stone-100">
+                                <div className="text-xs text-stone-500 font-bold">Total Amount</div>
+                                <div className="text-lg font-extrabold text-stone-800">
+                                  ₱{Number(g.totalAmount).toFixed(2)}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="mt-3 border-t border-stone-100 pt-3 space-y-1">
+                              {g.items.map((x) => (
+                                <div key={x.id} className="flex justify-between text-sm text-stone-700 gap-3">
+                                  <span>
+                                    {x.productName} ({x.size}) x{x.quantity}
+                                  </span>
+                                  <strong>₱{Number(x.revenue).toFixed(2)}</strong>
+                                </div>
+                              ))}
+                            </div>
+
+                            {isCanceled && (
+                              <div className="mt-3 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2">
+                                Canceled by {g.canceledBy || "N/A"} • {g.cancelReason || "No reason"} •{" "}
+                                {formatDateTime(g.canceledAt)}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {safeView === "STAFF" && (isOwner || isAdmin) && (
+            <div>
+              <div className="flex justify-between items-end mb-6">
+                <div>
+                  <h2 className="text-2xl font-bold text-stone-800">Staff Accounts</h2>
+                  <p className="text-stone-500 text-sm">Create, edit, and delete staff logins</p>
+                </div>
+
+                <button
+                  onClick={refreshStaffUsers}
+                  className="bg-white hover:bg-stone-50 text-stone-700 border border-stone-300 font-bold px-4 py-2 rounded-lg text-sm transition shadow-sm inline-flex items-center gap-2"
+                >
+                  <Users size={16} /> Refresh
+                </button>
+              </div>
+
+              <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-5 mb-6">
+                <h3 className="font-bold text-stone-800 mb-3">Add Account</h3>
+                <form onSubmit={handleCreateStaffUser} className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                  <input
+                    className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                    placeholder="Username"
+                    value={staffUserForm.username}
+                    onChange={(e) => setStaffUserForm((p) => ({ ...p, username: e.target.value }))}
+                  />
+                  <input
+                    type="email"
+                    className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                    placeholder="Email"
+                    value={staffUserForm.email}
+                    onChange={(e) => setStaffUserForm((p) => ({ ...p, email: e.target.value }))}
+                  />
+                  <input
+                    type="password"
+                    className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                    placeholder="Password"
+                    value={staffUserForm.password}
+                    onChange={(e) => setStaffUserForm((p) => ({ ...p, password: e.target.value }))}
+                  />
+                  <select
+                    value={isOwner ? staffUserForm.role : "staff"}
+                    disabled={!isOwner}
+                    onChange={(e) => setStaffUserForm((p) => ({ ...p, role: e.target.value }))}
+                    className="px-3 py-2 border border-stone-300 rounded-lg text-sm bg-white disabled:bg-stone-100"
+                  >
+                    <option value="staff">Staff</option>
+                    {isOwner && <option value="admin">Admin</option>}
+                  </select>
+                  <button className="bg-amber-900 hover:bg-amber-800 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2">
+                    <Plus size={16} /> Add
+                  </button>
+                </form>
+              </div>
+
+              <div className="bg-white rounded-xl border border-stone-200 shadow-sm overflow-hidden">
+                <div className="p-6 border-b border-stone-100">
+                  <h3 className="font-bold text-stone-800">Accounts List</h3>
+                </div>
+
+                <div className="p-6">
+                  {isLoadingStaffUsers ? (
+                    <p className="text-sm text-stone-500">Loading staff accounts...</p>
+                  ) : staffUsers.length === 0 ? (
+                    <p className="text-sm text-stone-500">No manageable accounts yet.</p>
+                  ) : (
+                    <div className="space-y-3">
+                      {staffUsers.map((u) => {
+                        const isEditing = editingStaffUserId === u.id;
+                        return (
+                          <div key={u.id} className="border border-stone-200 rounded-xl p-4">
+                            {isEditing ? (
+                              <div className="grid grid-cols-1 md:grid-cols-5 gap-2">
+                                <input
+                                  className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                                  value={staffUserEditForm.username}
+                                  onChange={(e) =>
+                                    setStaffUserEditForm((p) => ({ ...p, username: e.target.value }))
+                                  }
+                                />
+                                <input
+                                  type="email"
+                                  className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                                  value={staffUserEditForm.email}
+                                  onChange={(e) => setStaffUserEditForm((p) => ({ ...p, email: e.target.value }))}
+                                />
+                                <input
+                                  type="password"
+                                  className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                                  placeholder="New password optional"
+                                  value={staffUserEditForm.password}
+                                  onChange={(e) =>
+                                    setStaffUserEditForm((p) => ({ ...p, password: e.target.value }))
+                                  }
+                                />
+                                <select
+                                  value={isOwner ? staffUserEditForm.role : "staff"}
+                                  disabled={!isOwner}
+                                  onChange={(e) => setStaffUserEditForm((p) => ({ ...p, role: e.target.value }))}
+                                  className="px-3 py-2 border border-stone-300 rounded-lg text-sm bg-white disabled:bg-stone-100"
+                                >
+                                  <option value="staff">Staff</option>
+                                  {isOwner && <option value="admin">Admin</option>}
+                                </select>
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUpdateStaffUser(u.id)}
+                                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2"
+                                  >
+                                    <Save size={16} /> Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingStaffUserId("")}
+                                    className="px-3 py-2 rounded-lg border border-stone-300 text-sm font-bold"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                                <div>
+                                  <div className="font-bold text-stone-800">{u.username}</div>
+                                  <div className="text-xs text-stone-500">{u.email || "No email"}</div>
+                                  <span className="inline-flex mt-2 px-2 py-1 rounded-full bg-blue-100 text-blue-800 border border-blue-200 text-[11px] font-bold">
+                                    {u.role}
+                                  </span>
+                                </div>
+                                <div className="flex gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => startEditStaffUser(u)}
+                                    className="px-3 py-2 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold inline-flex items-center gap-1"
+                                  >
+                                    <Pencil size={14} /> Edit
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteStaffUser(u.id)}
+                                    className="px-3 py-2 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 text-xs font-bold inline-flex items-center gap-1"
+                                  >
+                                    <Trash2 size={14} /> Delete
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>
