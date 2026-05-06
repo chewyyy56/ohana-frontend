@@ -528,7 +528,9 @@ export default function App() {
     setIsLoadingStaffOrders(true);
     try {
       const res = await apiFetch("/api/orders/staff");
-      const groups = (res?.groups || []).map(mapStaffGroup);
+      const groups = (res?.groups || [])
+        .map(mapStaffGroup)
+        .filter((g) => (g.status || "active") === "active");
       setStaffOrderGroups(groups);
     } catch (err) {
       toastError(err.message || "Failed to load staff orders.");
@@ -608,7 +610,11 @@ export default function App() {
       // admin/owner can still view their own staff-style groups if needed
       try {
         const grpRes = await apiFetch("/api/orders/staff");
-        setStaffOrderGroups((grpRes?.groups || []).map(mapStaffGroup));
+        setStaffOrderGroups(
+          (grpRes?.groups || [])
+            .map(mapStaffGroup)
+            .filter((g) => (g.status || "active") === "active")
+        );
       } catch {
         setStaffOrderGroups([]);
       }
@@ -1151,12 +1157,7 @@ export default function App() {
       }
 
       if (res?.group) {
-        const mapped = mapStaffGroup(res.group);
-        setStaffOrderGroups((prev) => {
-          const exists = prev.some((g) => g.groupId === mapped.groupId);
-          if (!exists) return [mapped, ...prev];
-          return prev.map((g) => (g.groupId === mapped.groupId ? mapped : g));
-        });
+        setStaffOrderGroups((prev) => prev.filter((g) => g.groupId !== groupId));
       }
 
       setOrders((prev) => {
@@ -2063,7 +2064,7 @@ export default function App() {
                     )}
                   </div>
 
-                  {isStaff && (
+                  {(isStaff || isAdmin || isOwner) && (
                     <div className="bg-white p-5 rounded-xl border border-stone-200 shadow-sm">
                       <div className="flex items-center justify-between mb-3">
                         <h3 className="font-bold text-stone-800">Submitted Orders</h3>
