@@ -771,6 +771,78 @@ export default function App() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    let canceled = false;
+
+    const refreshLiveData = async () => {
+      try {
+        const invRes = await apiFetch("/api/inventory");
+        const inv = invRes?.inventory || invRes || {};
+        if (!canceled) setInventory(inv);
+
+        if (userRole === "staff") {
+          const [queueRes, historyRes] = await Promise.all([
+            apiFetch("/api/orders/staff"),
+            apiFetch("/api/orders/staff?history=true"),
+          ]);
+
+          if (canceled) return;
+          setStaffOrderGroups(
+            (queueRes?.groups || [])
+              .map(mapStaffGroup)
+              .filter((g) => isOpenOrderStatus(g.status))
+          );
+          setStaffOrderHistoryGroups((historyRes?.groups || []).map(mapStaffGroup));
+          return;
+        }
+
+        if (userRole === "admin" || userRole === "owner") {
+          const [ordersRes, queueRes, historyRes] = await Promise.all([
+            apiFetch("/api/orders"),
+            apiFetch("/api/orders/staff"),
+            apiFetch("/api/orders/staff?history=true"),
+          ]);
+
+          if (canceled) return;
+          const mappedOrders = (ordersRes?.orders || ordersRes || []).map((o) => ({
+            id: o._id,
+            groupId: o.groupId || "",
+            createdAt: o.createdAt,
+            productId: o.productId,
+            productName: o.productName,
+            size: o.size,
+            quantity: Number(o.quantity || 1),
+            revenue: o.revenue || 0,
+            cogs: o.cogs || 0,
+            status: o.status || "active",
+            canceledAt: o.canceledAt || null,
+            canceledBy: o.canceledBy || "",
+            cancelReason: o.cancelReason || "",
+          }));
+
+          setOrders(mappedOrders);
+          recalcStatsFromOrders(mappedOrders);
+          setStaffOrderGroups(
+            (queueRes?.groups || [])
+              .map(mapStaffGroup)
+              .filter((g) => isOpenOrderStatus(g.status))
+          );
+          setStaffOrderHistoryGroups((historyRes?.groups || []).map(mapStaffGroup));
+        }
+      } catch {
+        // Keep the current screen stable if a background refresh misses one beat.
+      }
+    };
+
+    const timer = window.setInterval(refreshLiveData, 5000);
+    return () => {
+      canceled = true;
+      window.clearInterval(timer);
+    };
+  }, [isAuthenticated, userRole]);
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError(null);
