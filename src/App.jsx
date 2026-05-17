@@ -556,6 +556,7 @@ export default function App() {
   const isOwner = userRole === "owner";
   const isAdmin = userRole === "admin";
   const isStaff = userRole === "staff";
+  const canManageAccounts = isAdmin;
 
   const toastError = (msg) => {
     setAlertMessage(msg);
@@ -621,7 +622,7 @@ export default function App() {
   };
 
   const refreshStaffSignupCode = async () => {
-    if (!(userRole === "admin" || userRole === "owner")) return;
+    if (userRole !== "admin") return;
     setIsLoadingSignupCode(true);
     try {
       const res = await apiFetch("/api/staff-signup-code");
@@ -730,12 +731,17 @@ export default function App() {
         setStaffUsers([]);
       }
 
-      try {
-        const codeRes = await apiFetch("/api/staff-signup-code");
-        const code = codeRes?.code || "";
-        setStaffSignupCode(code);
-        setStaffSignupCodeDraft(code);
-      } catch {
+      if (role === "admin") {
+        try {
+          const codeRes = await apiFetch("/api/staff-signup-code");
+          const code = codeRes?.code || "";
+          setStaffSignupCode(code);
+          setStaffSignupCodeDraft(code);
+        } catch {
+          setStaffSignupCode("");
+          setStaffSignupCodeDraft("");
+        }
+      } else {
         setStaffSignupCode("");
         setStaffSignupCodeDraft("");
       }
@@ -968,14 +974,14 @@ export default function App() {
 
   const handleCreateStaffUser = async (e) => {
     e.preventDefault();
-    if (!(isAdmin || isOwner)) return;
+    if (!canManageAccounts) return;
 
     try {
       const payload = {
         username: staffUserForm.username.trim(),
         email: staffUserForm.email.trim(),
         password: staffUserForm.password,
-        role: isOwner ? staffUserForm.role : "staff",
+        role: "staff",
       };
 
       if (!payload.username || !payload.password) {
@@ -1013,13 +1019,13 @@ export default function App() {
   };
 
   const handleUpdateStaffUser = async (id) => {
-    if (!(isAdmin || isOwner) || !id) return;
+    if (!canManageAccounts || !id) return;
 
     try {
       const payload = {
         username: staffUserEditForm.username.trim(),
         email: staffUserEditForm.email.trim(),
-        role: isOwner ? staffUserEditForm.role : "staff",
+        role: "staff",
       };
 
       if (staffUserEditForm.password) {
@@ -1048,7 +1054,7 @@ export default function App() {
   };
 
   const handleDeleteStaffUser = async (id) => {
-    if (!(isAdmin || isOwner) || !id) return;
+    if (!canManageAccounts || !id) return;
     const ok = window.confirm("Delete this staff account?");
     if (!ok) return;
 
@@ -1068,7 +1074,7 @@ export default function App() {
 
   const handleSaveStaffSignupCode = async (e) => {
     e.preventDefault();
-    if (!(isAdmin || isOwner)) return;
+    if (!canManageAccounts) return;
 
     const code = staffSignupCodeDraft.trim();
     if (code.length < 6) {
@@ -1094,7 +1100,7 @@ export default function App() {
   };
 
   const handleGenerateStaffSignupCode = async () => {
-    if (!(isAdmin || isOwner)) return;
+    if (!canManageAccounts) return;
     setIsSavingSignupCode(true);
     try {
       const res = await apiFetch("/api/staff-signup-code", {
@@ -2705,13 +2711,15 @@ export default function App() {
               <div className="flex justify-between items-end mb-6">
                 <div>
                   <h2 className="text-2xl font-bold text-stone-800">Staff Accounts</h2>
-                  <p className="text-stone-500 text-sm">Create, edit, and delete staff logins</p>
+                  <p className="text-stone-500 text-sm">
+                    {canManageAccounts ? "Create, edit, and delete staff logins" : "View admin and staff logins"}
+                  </p>
                 </div>
 
                 <button
                   onClick={() => {
                     refreshStaffUsers();
-                    refreshStaffSignupCode();
+                    if (canManageAccounts) refreshStaffSignupCode();
                   }}
                   className="bg-white hover:bg-stone-50 text-stone-700 border border-stone-300 font-bold px-4 py-2 rounded-lg text-sm transition shadow-sm inline-flex items-center gap-2"
                 >
@@ -2719,79 +2727,74 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-5 mb-6">
-                <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
-                  <div>
-                    <h3 className="font-bold text-stone-800 mb-1">Staff Registration Code</h3>
-                    <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-stone-100 border border-stone-200 text-stone-800 font-mono font-bold tracking-wide">
-                      <KeyRound size={16} className="text-amber-700" />
-                      {isLoadingSignupCode ? "Loading..." : staffSignupCode || "No code loaded"}
+              {canManageAccounts && (
+                <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-5 mb-6">
+                  <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+                    <div>
+                      <h3 className="font-bold text-stone-800 mb-1">Staff Registration Code</h3>
+                      <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-stone-100 border border-stone-200 text-stone-800 font-mono font-bold tracking-wide">
+                        <KeyRound size={16} className="text-amber-700" />
+                        {isLoadingSignupCode ? "Loading..." : staffSignupCode || "No code loaded"}
+                      </div>
                     </div>
-                  </div>
 
-                  <form onSubmit={handleSaveStaffSignupCode} className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
+                    <form onSubmit={handleSaveStaffSignupCode} className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
+                      <input
+                        className="px-3 py-2 border border-stone-300 rounded-lg text-sm uppercase min-w-0 sm:min-w-[220px]"
+                        placeholder="New code"
+                        value={staffSignupCodeDraft}
+                        onChange={(e) => setStaffSignupCodeDraft(e.target.value.toUpperCase())}
+                      />
+                      <button
+                        type="submit"
+                        disabled={isSavingSignupCode}
+                        className="bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2"
+                      >
+                        <Save size={16} /> Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleGenerateStaffSignupCode}
+                        disabled={isSavingSignupCode}
+                        className="bg-stone-900 hover:bg-stone-800 disabled:opacity-60 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2"
+                      >
+                        <RefreshCw size={16} /> Generate
+                      </button>
+                    </form>
+                  </div>
+                </div>
+              )}
+
+              {canManageAccounts && (
+                <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-5 mb-6">
+                  <h3 className="font-bold text-stone-800 mb-3">Add Account</h3>
+                  <form onSubmit={handleCreateStaffUser} className="grid grid-cols-1 md:grid-cols-4 gap-2">
                     <input
-                      className="px-3 py-2 border border-stone-300 rounded-lg text-sm uppercase min-w-0 sm:min-w-[220px]"
-                      placeholder="New code"
-                      value={staffSignupCodeDraft}
-                      onChange={(e) => setStaffSignupCodeDraft(e.target.value.toUpperCase())}
+                      className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                      placeholder="Username"
+                      value={staffUserForm.username}
+                      onChange={(e) => setStaffUserForm((p) => ({ ...p, username: e.target.value }))}
                     />
-                    <button
-                      type="submit"
-                      disabled={isSavingSignupCode}
-                      className="bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2"
-                    >
-                      <Save size={16} /> Save
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleGenerateStaffSignupCode}
-                      disabled={isSavingSignupCode}
-                      className="bg-stone-900 hover:bg-stone-800 disabled:opacity-60 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2"
-                    >
-                      <RefreshCw size={16} /> Generate
+                    <input
+                      type="email"
+                      className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                      placeholder="Email"
+                      value={staffUserForm.email}
+                      onChange={(e) => setStaffUserForm((p) => ({ ...p, email: e.target.value }))}
+                    />
+                    <input
+                      type="password"
+                      className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
+                      placeholder="Password"
+                      value={staffUserForm.password}
+                      onChange={(e) => setStaffUserForm((p) => ({ ...p, password: e.target.value }))}
+                    />
+                    <button className="bg-amber-900 hover:bg-amber-800 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2">
+                      <Plus size={16} /> Add
                     </button>
                   </form>
                 </div>
-              </div>
-
-              <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-5 mb-6">
-                <h3 className="font-bold text-stone-800 mb-3">Add Account</h3>
-                <form onSubmit={handleCreateStaffUser} className="grid grid-cols-1 md:grid-cols-5 gap-2">
-                  <input
-                    className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
-                    placeholder="Username"
-                    value={staffUserForm.username}
-                    onChange={(e) => setStaffUserForm((p) => ({ ...p, username: e.target.value }))}
-                  />
-                  <input
-                    type="email"
-                    className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
-                    placeholder="Email"
-                    value={staffUserForm.email}
-                    onChange={(e) => setStaffUserForm((p) => ({ ...p, email: e.target.value }))}
-                  />
-                  <input
-                    type="password"
-                    className="px-3 py-2 border border-stone-300 rounded-lg text-sm"
-                    placeholder="Password"
-                    value={staffUserForm.password}
-                    onChange={(e) => setStaffUserForm((p) => ({ ...p, password: e.target.value }))}
-                  />
-                  <select
-                    value={isOwner ? staffUserForm.role : "staff"}
-                    disabled={!isOwner}
-                    onChange={(e) => setStaffUserForm((p) => ({ ...p, role: e.target.value }))}
-                    className="px-3 py-2 border border-stone-300 rounded-lg text-sm bg-white disabled:bg-stone-100"
-                  >
-                    <option value="staff">Staff</option>
-                    {isOwner && <option value="admin">Admin</option>}
-                  </select>
-                  <button className="bg-amber-900 hover:bg-amber-800 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2">
-                    <Plus size={16} /> Add
-                  </button>
-                </form>
-              </div>
+              )}
 
               <div className="bg-white rounded-xl border border-stone-200 shadow-sm overflow-hidden">
                 <div className="p-6 border-b border-stone-100">
@@ -2806,7 +2809,7 @@ export default function App() {
                   ) : (
                     <div className="space-y-3">
                       {staffUsers.map((u) => {
-                        const isEditing = editingStaffUserId === u.id;
+                        const isEditing = canManageAccounts && editingStaffUserId === u.id;
                         return (
                           <div key={u.id} className="border border-stone-200 rounded-xl p-4">
                             {isEditing ? (
@@ -2834,13 +2837,12 @@ export default function App() {
                                   }
                                 />
                                 <select
-                                  value={isOwner ? staffUserEditForm.role : "staff"}
-                                  disabled={!isOwner}
+                                  value="staff"
+                                  disabled
                                   onChange={(e) => setStaffUserEditForm((p) => ({ ...p, role: e.target.value }))}
                                   className="px-3 py-2 border border-stone-300 rounded-lg text-sm bg-white disabled:bg-stone-100"
                                 >
                                   <option value="staff">Staff</option>
-                                  {isOwner && <option value="admin">Admin</option>}
                                 </select>
                                 <div className="flex gap-2">
                                   <button
@@ -2868,22 +2870,24 @@ export default function App() {
                                     {u.role}
                                   </span>
                                 </div>
-                                <div className="flex gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => startEditStaffUser(u)}
-                                    className="px-3 py-2 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold inline-flex items-center gap-1"
-                                  >
-                                    <Pencil size={14} /> Edit
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleDeleteStaffUser(u.id)}
-                                    className="px-3 py-2 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 text-xs font-bold inline-flex items-center gap-1"
-                                  >
-                                    <Trash2 size={14} /> Delete
-                                  </button>
-                                </div>
+                                {canManageAccounts && (
+                                  <div className="flex gap-2">
+                                    <button
+                                      type="button"
+                                      onClick={() => startEditStaffUser(u)}
+                                      className="px-3 py-2 rounded-lg bg-stone-100 hover:bg-stone-200 text-stone-700 text-xs font-bold inline-flex items-center gap-1"
+                                    >
+                                      <Pencil size={14} /> Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteStaffUser(u.id)}
+                                      className="px-3 py-2 rounded-lg bg-red-100 hover:bg-red-200 text-red-700 text-xs font-bold inline-flex items-center gap-1"
+                                    >
+                                      <Trash2 size={14} /> Delete
+                                    </button>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
