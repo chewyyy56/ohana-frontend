@@ -22,6 +22,8 @@ import {
   Pencil,
   Save,
   Plus,
+  KeyRound,
+  RefreshCw,
 } from "lucide-react";
 import {
   AreaChart,
@@ -484,6 +486,7 @@ export default function App() {
   const [loginError, setLoginError] = useState(null);
   const [isRegistering, setIsRegistering] = useState(false);
   const [userRole, setUserRole] = useState("staff");
+  const [signupCode, setSignupCode] = useState("");
 
   const [inventory, setInventory] = useState(INITIAL_INVENTORY);
   const [orders, setOrders] = useState([]);
@@ -517,6 +520,10 @@ export default function App() {
   const [staffUserForm, setStaffUserForm] = useState(EMPTY_STAFF_USER_FORM);
   const [editingStaffUserId, setEditingStaffUserId] = useState("");
   const [staffUserEditForm, setStaffUserEditForm] = useState(EMPTY_STAFF_USER_FORM);
+  const [staffSignupCode, setStaffSignupCode] = useState("");
+  const [staffSignupCodeDraft, setStaffSignupCodeDraft] = useState("");
+  const [isLoadingSignupCode, setIsLoadingSignupCode] = useState(false);
+  const [isSavingSignupCode, setIsSavingSignupCode] = useState(false);
 
   const [supplierDeliveries, setSupplierDeliveries] = useState([]);
 
@@ -610,6 +617,21 @@ export default function App() {
       toastError(err.message || "Failed to load staff accounts.");
     } finally {
       setIsLoadingStaffUsers(false);
+    }
+  };
+
+  const refreshStaffSignupCode = async () => {
+    if (!(userRole === "admin" || userRole === "owner")) return;
+    setIsLoadingSignupCode(true);
+    try {
+      const res = await apiFetch("/api/staff-signup-code");
+      const code = res?.code || "";
+      setStaffSignupCode(code);
+      setStaffSignupCodeDraft(code);
+    } catch (err) {
+      toastError(err.message || "Failed to load registration code.");
+    } finally {
+      setIsLoadingSignupCode(false);
     }
   };
 
@@ -707,6 +729,16 @@ export default function App() {
       } catch {
         setStaffUsers([]);
       }
+
+      try {
+        const codeRes = await apiFetch("/api/staff-signup-code");
+        const code = codeRes?.code || "";
+        setStaffSignupCode(code);
+        setStaffSignupCodeDraft(code);
+      } catch {
+        setStaffSignupCode("");
+        setStaffSignupCodeDraft("");
+      }
     }
   };
 
@@ -764,9 +796,10 @@ export default function App() {
       const usernameVal = String(fd.get("username") || "").trim();
       const emailVal = String(fd.get("email") || "").trim();
       const passwordVal = String(fd.get("password") || "").trim();
+      const signupCodeVal = String(fd.get("signupCode") || "").trim();
 
-      if (!usernameVal || !emailVal || !passwordVal) {
-        throw new Error("Please complete username, email, and password.");
+      if (!usernameVal || !emailVal || !passwordVal || !signupCodeVal) {
+        throw new Error("Please complete username, email, password, and registration code.");
       }
 
       const data = await apiFetch("/api/auth/register", {
@@ -775,6 +808,7 @@ export default function App() {
           username: usernameVal,
           email: emailVal,
           password: passwordVal,
+          signupCode: signupCodeVal,
           role: "staff",
         }),
       });
@@ -795,6 +829,7 @@ export default function App() {
     setIsAuthenticated(false);
     setUsername("");
     setPassword("");
+    setSignupCode("");
     setUserRole("staff");
     setLoginError(null);
     setCartItems([]);
@@ -805,6 +840,8 @@ export default function App() {
     setStaffUserForm(EMPTY_STAFF_USER_FORM);
     setEditingStaffUserId("");
     setStaffUserEditForm(EMPTY_STAFF_USER_FORM);
+    setStaffSignupCode("");
+    setStaffSignupCodeDraft("");
     setOrders([]);
     setView("POS");
   };
@@ -1026,6 +1063,53 @@ export default function App() {
       setTimeout(() => setAlertMessage(null), 1800);
     } catch (err) {
       toastError(err.message || "Failed to delete staff account.");
+    }
+  };
+
+  const handleSaveStaffSignupCode = async (e) => {
+    e.preventDefault();
+    if (!(isAdmin || isOwner)) return;
+
+    const code = staffSignupCodeDraft.trim();
+    if (code.length < 6) {
+      toastError("Registration code must be at least 6 characters.");
+      return;
+    }
+
+    setIsSavingSignupCode(true);
+    try {
+      const res = await apiFetch("/api/staff-signup-code", {
+        method: "PATCH",
+        body: JSON.stringify({ code }),
+      });
+      setStaffSignupCode(res?.code || code.toUpperCase());
+      setStaffSignupCodeDraft(res?.code || code.toUpperCase());
+      setAlertMessage("Registration code updated.");
+      setTimeout(() => setAlertMessage(null), 1800);
+    } catch (err) {
+      toastError(err.message || "Failed to update registration code.");
+    } finally {
+      setIsSavingSignupCode(false);
+    }
+  };
+
+  const handleGenerateStaffSignupCode = async () => {
+    if (!(isAdmin || isOwner)) return;
+    setIsSavingSignupCode(true);
+    try {
+      const res = await apiFetch("/api/staff-signup-code", {
+        method: "PATCH",
+        body: JSON.stringify({}),
+      });
+      const code = res?.code || "";
+      setStaffSignupCode(code);
+      setStaffSignupCodeDraft(code);
+      setAlertMessage("New registration code generated.");
+      setTimeout(() => setAlertMessage(null), 1800);
+    } catch (err) {
+      toastError(err.message || "Failed to generate registration code.");
+    } finally {
+      setIsSavingSignupCode(false);
     }
   };
 
@@ -1718,6 +1802,23 @@ export default function App() {
                   </div>
                 </div>
 
+                <div>
+                  <label className="block text-sm font-bold text-stone-700 mb-1">Registration Code</label>
+                  <div className="relative">
+                    <KeyRound className="absolute left-3 top-3 text-stone-400" size={18} />
+                    <input
+                      name="signupCode"
+                      type="text"
+                      value={signupCode}
+                      onChange={(e) => setSignupCode(e.target.value)}
+                      className="w-full pl-10 pr-4 py-2 border border-stone-300 rounded-lg focus:ring-2 focus:ring-amber-500 focus:outline-none uppercase"
+                      placeholder="Code from admin"
+                      autoComplete="off"
+                      required
+                    />
+                  </div>
+                </div>
+
                 {loginError && (
                   <p className="text-red-500 text-sm text-center font-medium bg-red-50 p-2 rounded-lg border border-red-200">
                     {loginError}
@@ -1731,7 +1832,10 @@ export default function App() {
                 <div className="text-center mt-3">
                   <button
                     type="button"
-                    onClick={() => setIsRegistering(false)}
+                    onClick={() => {
+                      setIsRegistering(false);
+                      setSignupCode("");
+                    }}
                     className="text-amber-700 font-bold hover:underline"
                   >
                     Back to Login
@@ -1782,7 +1886,10 @@ export default function App() {
                   Don’t have an account?{" "}
                   <button
                     type="button"
-                    onClick={() => setIsRegistering(true)}
+                    onClick={() => {
+                      setIsRegistering(true);
+                      setSignupCode("");
+                    }}
                     className="text-amber-700 font-bold hover:underline"
                   >
                     Create Account
@@ -2602,11 +2709,50 @@ export default function App() {
                 </div>
 
                 <button
-                  onClick={refreshStaffUsers}
+                  onClick={() => {
+                    refreshStaffUsers();
+                    refreshStaffSignupCode();
+                  }}
                   className="bg-white hover:bg-stone-50 text-stone-700 border border-stone-300 font-bold px-4 py-2 rounded-lg text-sm transition shadow-sm inline-flex items-center gap-2"
                 >
                   <Users size={16} /> Refresh
                 </button>
+              </div>
+
+              <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-5 mb-6">
+                <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-4">
+                  <div>
+                    <h3 className="font-bold text-stone-800 mb-1">Staff Registration Code</h3>
+                    <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-stone-100 border border-stone-200 text-stone-800 font-mono font-bold tracking-wide">
+                      <KeyRound size={16} className="text-amber-700" />
+                      {isLoadingSignupCode ? "Loading..." : staffSignupCode || "No code loaded"}
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleSaveStaffSignupCode} className="flex flex-col sm:flex-row gap-2 w-full lg:w-auto">
+                    <input
+                      className="px-3 py-2 border border-stone-300 rounded-lg text-sm uppercase min-w-0 sm:min-w-[220px]"
+                      placeholder="New code"
+                      value={staffSignupCodeDraft}
+                      onChange={(e) => setStaffSignupCodeDraft(e.target.value.toUpperCase())}
+                    />
+                    <button
+                      type="submit"
+                      disabled={isSavingSignupCode}
+                      className="bg-emerald-700 hover:bg-emerald-800 disabled:opacity-60 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2"
+                    >
+                      <Save size={16} /> Save
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleGenerateStaffSignupCode}
+                      disabled={isSavingSignupCode}
+                      className="bg-stone-900 hover:bg-stone-800 disabled:opacity-60 text-white rounded-lg text-sm font-bold px-3 py-2 inline-flex items-center justify-center gap-2"
+                    >
+                      <RefreshCw size={16} /> Generate
+                    </button>
+                  </form>
+                </div>
               </div>
 
               <div className="bg-white rounded-xl border border-stone-200 shadow-sm p-5 mb-6">
