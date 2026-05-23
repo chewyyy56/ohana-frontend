@@ -413,6 +413,14 @@ const formatDateTime = (value) => {
   return d.toLocaleString();
 };
 
+const formatPesoAxis = (value) => {
+  const n = Number(value || 0);
+  if (Math.abs(n) >= 1000000) return `₱${(n / 1000000).toFixed(1)}M`;
+  if (Math.abs(n) >= 10000) return `₱${Math.round(n / 1000)}k`;
+  if (Math.abs(n) >= 1000) return `₱${(n / 1000).toFixed(1)}k`;
+  return `₱${Math.round(n).toLocaleString()}`;
+};
+
 const mapStaffGroup = (g) => {
   const items = Array.isArray(g?.items) ? g.items : [];
   const totalItems =
@@ -3158,7 +3166,8 @@ export default function App() {
                         <YAxis
                           axisLine={false}
                           tickLine={false}
-                          tickFormatter={(v) => `₱${Math.floor(v / 1000)}k`}
+                          allowDecimals={false}
+                          tickFormatter={formatPesoAxis}
                         />
                         <Tooltip formatter={(value) => [`₱${Number(value).toLocaleString()}`, "Income"]} />
                         <Area
